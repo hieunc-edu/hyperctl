@@ -5,7 +5,7 @@
 # ---------------------------SETTINGS------------------------------------
 
 VERSION="v1.0.1"
-WORKDIR="./tmp"
+WORKDIR="$PWD/VM"
 GUESTUSER=$USER
 SSHPATH="$HOME/.ssh/id_rsa.pub"
 if ! [ -a $SSHPATH ]; then
@@ -56,13 +56,15 @@ case $CONFIG in
   ;;
 esac
 
-CIDR="10.10.0"
+CIDR="10.10.10"
 CMDLINE="earlyprintk=serial console=ttyS0 root=/dev/sda1" # root=LABEL=cloudimg-rootfs
 ISO="cloud-init.iso"
 
-CPUS=4
+CPUS=2
 RAM=4GB
-HDD=40G
+mCPUS=4
+mRAM=4GB
+HDD=20G
 
 FORMAT="raw"
 FILEPREFIX=""
@@ -91,6 +93,7 @@ NODES=(
   "node7  F05E1728-7403-46CF-B88E-B243D754B800 $CIDR.17 86:d6:cf:41:e0:3e"
   "node8  38659F47-3A64-49E3-AE6E-B41F6A42E1D1 $CIDR.18 ca:c5:12:22:d:ce"
   "node9  20DD5167-9FBE-439E-9849-E324E984FB96 $CIDR.19 f6:d4:b9:fd:20:c"
+  "nexus  e77ca21e-3f58-4398-a83f-125a755620d3 $CIDR.20 de:cd:75:22:fa:cc"
 )
 
 KUBEPACKAGES_latest="\
@@ -111,9 +114,9 @@ KUBEPACKAGES_mid_2019="\
   - [ kubectl, 1.15.3 ]
 "
 
-KUBEPACKAGES=$KUBEPACKAGES_mid_2019
+KUBEPACKAGES=$KUBEPACKAGES_latest
 
-CNI="flannel"
+CNI="calico"
 
 case $CNI in
   flannel)
@@ -125,14 +128,14 @@ case $CNI in
     CNINET="10.32.0.0/12"
   ;;
   calico)
-    CNIYAML="https://docs.projectcalico.org/v3.7/manifests/calico.yaml"
-    CNINET="192.168.0.0/16"
+    CNIYAML="https://docs.projectcalico.org/manifests/calico.yaml"
+    CNINET="10.20.0.0/16"
   ;;
 esac
 
 SSHOPTS="-o ConnectTimeout=5 -o LogLevel=ERROR -o StrictHostKeyChecking=false -o UserKnownHostsFile=/dev/null"
 
-DOCKERCLI="https://download.docker.com/mac/static/stable/x86_64/docker-19.03.1.tgz"
+DOCKERCLI="https://download.docker.com/mac/static/stable/x86_64/docker-19.03.8.tgz"
 
 HELMURL="https://get.helm.sh/helm-v3.1.1-darwin-amd64.tar.gz"
 
@@ -190,6 +193,7 @@ write_files:
           \"max-size\": \"100m\"
         },
         \"storage-driver\": \"overlay2\",
+        \"registry-mirrors\": [\"http://10.10.10.10:8082\"],
         \"storage-opts\": [
           \"overlay2.override_kernel_check=true\"
         ]
@@ -244,6 +248,7 @@ runcmd:
   # https://github.com/kubernetes/kubernetes/issues/76531
   - curl -L 'https://github.com/youurayy/runc/releases/download/v1.0.0-rc8-slice-fix-2/runc-centos.tgz' | tar --backup=numbered -xzf - -C \$(dirname \$(which runc))
   - systemctl start docker
+  - \[ `hostname` = "master" \] && docker volume create --name nexus-data && docker run -d -p 8081:8081 -p 8082:8082 --name nexus -v nexus-data:/nexus-data sonatype/nexus3
   - touch /home/$GUESTUSER/.init-completed"
 
 USERDATA_ubuntu="\
@@ -266,7 +271,18 @@ $USERDATA_shared
       NamePolicy=kernel database onboard slot path
       MACAddressPolicy=none
 
+timezone: Asia/Ho_Chi_Minh
+
 apt:
+  primary:
+    - arches:
+            - amd64
+            - i386
+            - default
+      uri: "http://mirrors.nhanhoa.com/ubuntu/"
+      search:
+        - "http://10.10.10.10:8081/repository/bionic"
+        - "http://mirrors.nhanhoa.com/ubuntu/"
   sources:
     kubernetes:
       source: 'deb http://apt.kubernetes.io/ kubernetes-xenial main'
@@ -333,7 +349,7 @@ get_mac() {
 
 dhcpd-leases() {
 cat << EOF | sudo tee -a $DHCPD_LEASES
-$(for i in `seq 0 1 9`; do echo "{
+$(for i in `seq 0 1 10`; do echo "{
         name=$(get_host $i)
         ip_address=$(get_ip $i)
         hw_address=1,$(get_mac $i)
@@ -500,7 +516,7 @@ get-all-nodes() {
 }
 
 get-worker-nodes() {
-  find $WORKDIR/* -maxdepth 0 -type d -not -name master |
+  find $WORKDIR/* -maxdepth 0 -type d -not -name master -not -name nexus|
     while read node; do echo -n " "`basename $node`; done
 }
 
@@ -644,8 +660,11 @@ for arg in "$@"; do
     image)
       download-image
     ;;
+    nexus)
+      UUID=$(get_uuid 10) NAME=nexus CPUS=$CPUS RAM=$RAM DISK=$HDD create-machine
+    ;;
     master)
-      UUID=$(get_uuid 0) NAME=master CPUS=$CPUS RAM=$RAM DISK=$HDD create-machine
+      UUID=$(get_uuid 0) NAME=master CPUS=$mCPUS RAM=$mRAM DISK=$HDD create-machine
     ;;
     node*)
       num=$(echo $arg | sed -E 's:node(.+):\1:')
